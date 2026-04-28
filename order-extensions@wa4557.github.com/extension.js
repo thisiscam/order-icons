@@ -63,8 +63,8 @@ function _redrawIndicators() {
     for (const k in this.statusArea) {
         const role = k;
         const indicator = this.statusArea[k];
-        let box = indicator.get_parent().get_parent();
-        if (box == undefined) continue
+        const box = indicator?.get_parent?.()?.get_parent?.();
+        if (box == null) continue;
         this._addToPanelBox(role, indicator, 0, box)
     }
 
@@ -81,9 +81,28 @@ function _addToPanelBox(role, indicator, position, box) {
     }
 
     this.statusArea[role] = indicator;
+
+    // waitForId() polls async via GLib.timeout_add. While we wait, the panel
+    // can be rebuilt (lock/unlock, monitor wake) which disposes box, container
+    // and/or indicator. Touching a disposed GObject in mutter SEGVs gnome-shell
+    // (upstream issue #22). Watch the actors and bail out if any died.
+    let _disposed = false;
+    const _watchers = [];
+    for (const obj of [indicator, box, container]) {
+        if (obj && typeof obj.connect === 'function') {
+            _watchers.push([obj, obj.connect('destroy', () => { _disposed = true; })]);
+        }
+    }
+    const _stopWatching = () => {
+        for (const [obj, id] of _watchers) {
+            try { obj.disconnect(id); } catch (e) { /* already gone */ }
+        }
+    };
+
     // not ideal, but due to recent changes in appindicator-extension we have to wait for the ID to become available
     let in_blacklist = false;
     waitForId(indicator, role).then(() => {
+        if (_disposed) return;
         let position_corr = getRelativePosition(indicator, role, box.name, this.statusArea);
         let testName = getTestName(indicator, role);
         if (blacklist_array.includes(testName)) {
@@ -93,7 +112,7 @@ function _addToPanelBox(role, indicator, position, box) {
             setSettingValues(testName, box);
             box.insert_child_at_index(container, position_corr ? position_corr : position);
         }
-    }).catch((error) => { console.log(error) })
+    }).catch((error) => { console.log(error) }).finally(_stopWatching)
     if (in_blacklist) {
         delete this.statusArea[role];
     }
@@ -157,7 +176,8 @@ function getRelativePosition(indicator, role, boxName, statusArea) {
     let ctr = 0
     for (const k in statusArea) {
         if (k == role) continue
-        if (statusArea[k].get_parent().get_parent() != null && boxName === statusArea[k].get_parent().get_parent().get_name()) {
+        const otherBox = statusArea[k]?.get_parent?.()?.get_parent?.();
+        if (otherBox != null && boxName === otherBox.get_name()) {
             const toTest = getTestName(statusArea[k], k);
             let setPosition = getSettingsPosition(toTest, order_arr);
             if (setPosition == null) {
